@@ -18,6 +18,7 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 import scheduler
+import runner
 import charts
 
 
@@ -43,10 +44,10 @@ class SchedulerApp(ttk.Frame):
         # --- entry row ---
         entry = ttk.Frame(frame)
         entry.pack(fill="x")
-        self.e_pid = self._labelled_entry(entry, "Process ID", 0, "")
-        self.e_arr = self._labelled_entry(entry, "Arrival", 1, "0")
-        self.e_bur = self._labelled_entry(entry, "Burst", 2, "1")
-        self.e_pri = self._labelled_entry(entry, "Priority", 3, "0")
+        self.pid_var = self._labelled_entry(entry, "Process ID", 0, "")
+        self.arr_var = self._labelled_entry(entry, "Arrival", 1, "0")
+        self.bur_var = self._labelled_entry(entry, "Burst", 2, "1")
+        self.pri_var = self._labelled_entry(entry, "Priority", 3, "0")
         ttk.Button(entry, text="Add Process",
                    command=self.add_process).grid(row=1, column=4, padx=6)
 
@@ -67,12 +68,15 @@ class SchedulerApp(ttk.Frame):
                    command=self.clear_all).pack(side="left", padx=6)
 
     def _labelled_entry(self, parent, label, col, default):
+        """Place a label over an entry box and return the entry's StringVar.
+
+        Callers only ever read the value, so we hand back the var directly
+        rather than the widget (the widget is never referenced again).
+        """
         ttk.Label(parent, text=label).grid(row=0, column=col, padx=4, sticky="w")
         var = tk.StringVar(value=default)
-        e = ttk.Entry(parent, textvariable=var, width=12)
-        e.grid(row=1, column=col, padx=4)
-        e.var = var
-        return e
+        ttk.Entry(parent, textvariable=var, width=12).grid(row=1, column=col, padx=4)
+        return var
 
     # --------------------------------------------------------------- controls
     def _build_controls(self):
@@ -80,9 +84,9 @@ class SchedulerApp(ttk.Frame):
         frame.pack(fill="x", pady=(0, 8))
 
         ttk.Label(frame, text="Algorithm:").grid(row=0, column=0, padx=4)
-        self.algo_var = tk.StringVar(value=scheduler.ALGORITHMS[0])
+        self.algo_var = tk.StringVar(value=runner.ALGORITHMS[0])
         ttk.Combobox(frame, textvariable=self.algo_var,
-                     values=scheduler.ALGORITHMS, state="readonly",
+                     values=runner.ALGORITHMS, state="readonly",
                      width=16).grid(row=0, column=1, padx=4)
 
         ttk.Label(frame, text="Time Quantum (RR):").grid(row=0, column=2, padx=4)
@@ -156,13 +160,13 @@ class SchedulerApp(ttk.Frame):
 
     def add_process(self):
         try:
-            pid = self.e_pid.var.get().strip()
+            pid = self.pid_var.get().strip()
             if not pid:
                 self._counter += 1
                 pid = f"P{self._counter}"
-            arr = int(self.e_arr.var.get())
-            bur = int(self.e_bur.var.get())
-            pri = int(self.e_pri.var.get())
+            arr = int(self.arr_var.get())
+            bur = int(self.bur_var.get())
+            pri = int(self.pri_var.get())
             if arr < 0 or bur <= 0:
                 raise ValueError
         except ValueError:
@@ -171,7 +175,7 @@ class SchedulerApp(ttk.Frame):
                 "Arrival must be >= 0 and Burst must be a positive integer.")
             return
         self.tree.insert("", "end", values=(pid, arr, bur, pri))
-        self.e_pid.var.set("")
+        self.pid_var.set("")
 
     def delete_selected(self):
         for iid in self.tree.selection():
@@ -189,22 +193,56 @@ class SchedulerApp(ttk.Frame):
         self._counter = 4
 
     # ----------------------------------------------------------------- actions
-    def run_single(self):
+    def _validated_run_inputs(self):
+        """Collect the processes and time quantum, or show a dialog and bail.
+
+        Returns (processes, quantum) when both are valid. Returns None when
+        something was wrong AND the user has already been shown the relevant
+        warning/error, so the caller can simply `return` on None.
+        """
         procs = self._collect_processes()
         if not procs:
             messagebox.showwarning("No processes", "Add at least one process.")
-            return
+            return None
         try:
             quantum = int(self.quantum_var.get())
         except ValueError:
             messagebox.showerror("Invalid quantum", "Quantum must be an integer.")
+            return None
+        return procs, quantum
+
+    def run_single(self):
+        inputs = self._validated_run_inputs()
+        if inputs is None:
             return
+        procs, quantum = inputs
 
-        result = scheduler.run(self.algo_var.get(), procs,
-                               quantum=quantum,
-                               lower_is_higher=self.lower_higher.get())
+        result = runner.run(self.algo_var.get(), procs,
+                            quantum=quantum,
+                            lower_is_higher=self.lower_higher.get())
 
-        # fill results table
+        self._fill_result_table(result)
+        self._show_single_summary(result)
+        charts.draw_gantt(self.fig1, result)
+        self.canvas1.draw()
+        self.nb.select(0)
+
+    def run_compare(self):
+        inputs = self._validated_run_inputs()
+        if inputs is None:
+            return
+        procs, quantum = inputs
+
+        results = runner.run_all(procs, quantum=quantum,
+                                 lower_is_higher=self.lower_higher.get())
+
+        self._fill_comparison_table(results)
+        charts.draw_comparison(self.fig2, results)
+        self.canvas2.draw()
+        self.nb.select(1)
+
+    def _fill_result_table(self, result):
+        """Replace the single-run table rows with this Result's per-process rows."""
         for iid in self.result_tree.get_children():
             self.result_tree.delete(iid)
         for r in result.rows:
@@ -212,30 +250,16 @@ class SchedulerApp(ttk.Frame):
                 r["pid"], r["arrival"], r["burst"], r["completion"],
                 r["turnaround"], r["waiting"], r["response"]))
 
+    def _show_single_summary(self, result):
+        """Update the execution-order and averages labels for one Result."""
         self.order_lbl.config(text=f"Execution order: {result.execution_order}")
         self.avg_lbl.config(text=(
             f"Averages →  Waiting: {result.avg_waiting:.2f}   "
             f"Turnaround: {result.avg_turnaround:.2f}   "
             f"Response: {result.avg_response:.2f}"))
 
-        charts.draw_gantt(self.fig1, result)
-        self.canvas1.draw()
-        self.nb.select(0)
-
-    def run_compare(self):
-        procs = self._collect_processes()
-        if not procs:
-            messagebox.showwarning("No processes", "Add at least one process.")
-            return
-        try:
-            quantum = int(self.quantum_var.get())
-        except ValueError:
-            messagebox.showerror("Invalid quantum", "Quantum must be an integer.")
-            return
-
-        results = scheduler.run_all(procs, quantum=quantum,
-                                    lower_is_higher=self.lower_higher.get())
-
+    def _fill_comparison_table(self, results):
+        """Replace the comparison table rows and highlight the lowest-waiting one."""
         for iid in self.cmp_tree.get_children():
             self.cmp_tree.delete(iid)
         for r in results:
@@ -243,16 +267,11 @@ class SchedulerApp(ttk.Frame):
                 r.algorithm, f"{r.avg_waiting:.2f}",
                 f"{r.avg_turnaround:.2f}", f"{r.avg_response:.2f}"))
 
-        # highlight the best (lowest avg waiting) by tagging
         best = min(results, key=lambda r: r.avg_waiting)
         self.cmp_tree.tag_configure("best", background="#D6F5D6")
         for iid, r in zip(self.cmp_tree.get_children(), results):
             if r is best:
                 self.cmp_tree.item(iid, tags=("best",))
-
-        charts.draw_comparison(self.fig2, results)
-        self.canvas2.draw()
-        self.nb.select(1)
 
 
 def main():

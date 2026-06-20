@@ -25,17 +25,17 @@ Gantt chart, and compares all algorithms on the same workload.
 ## Project files
 | File | What it does |
 |------|--------------|
-| `scheduler.py` | The scheduling engine – all algorithms + metrics (no UI here) |
+| `scheduler.py` | The scheduling engine – the algorithms + metrics only (no UI, no dispatch) |
+| `runner.py` | Maps algorithm names to the engine (`run`, `run_all`, `ALGORITHMS`) |
 | `charts.py` | Draws the Gantt chart and the comparison bar chart (matplotlib) |
 | `gui.py` | Tkinter graphical interface |
 | `main.py` | Entry point: launches the GUI, or `--cli` for a text demo |
-| `test_engine.py` | Checks the algorithms against known textbook answers |
 
 ## How to run
 
 ### 1. Install the libraries
 ```bash
-pip install matplotlib pandas
+pip install matplotlib
 ```
 Tkinter ships with most Python installs. On Debian/Ubuntu Linux you may need:
 ```bash
@@ -46,7 +46,6 @@ sudo apt-get install python3-tk
 ```bash
 python main.py          # graphical interface
 python main.py --cli    # text-only demo (no display needed)
-python test_engine.py   # verify correctness
 ```
 
 ## Using the GUI
